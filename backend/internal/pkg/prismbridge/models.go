@@ -6,13 +6,15 @@ import (
 )
 
 var modelAliases = map[string]string{
-	"prism-astra": "gpt-6-astra",
-	"prism-sol":   "gpt-5.6-sol",
-	"prism-terra": "gpt-5.6-terra",
+	"prism-sol":     "gpt-5.6-sol",
+	"prism-sol-6.1": "gpt-6.1-sol",
+	"prism-luna":    "gpt-6-luna",
+	"prism-terra":   "gpt-5.6-terra",
 }
 
 var supportedModels = map[string]bool{
-	"gpt-6-astra":   true,
+	"gpt-6.1-sol":   true,
+	"gpt-6-luna":    true,
 	"gpt-5.6-sol":   true,
 	"gpt-5.6-terra": true,
 }
