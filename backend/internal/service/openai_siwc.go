@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
 )
 
 const (
@@ -25,6 +27,13 @@ const (
 // resource.invoke and the direct ChatGPT token-sharing permission.
 func (a *Account) IsOpenAISIWCTokenSharing() bool {
 	if a == nil || !a.IsOpenAIOAuth() {
+		return false
+	}
+	// Token-sharing registrations are dynamically issued as oaiapp_* clients.
+	// Requiring that registration prevents a normal Codex OAuth account from
+	// being accidentally routed to the public token-sharing endpoint by a stale
+	// or manually edited auth_mode flag.
+	if !openai.IsTokenSharingClientID(a.GetCredential("client_id")) {
 		return false
 	}
 
