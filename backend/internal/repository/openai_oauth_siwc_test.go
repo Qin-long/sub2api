@@ -17,7 +17,10 @@ func TestOpenAIOAuthServiceRefreshTokenWithClientIDUsesSIWCEndpoint(t *testing.T
 	var gotRefreshToken string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, r.ParseForm())
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		gotResource = r.Form.Get("resource")
 		gotScope = r.Form.Get("scope")
 		gotClientID = r.Form.Get("client_id")
