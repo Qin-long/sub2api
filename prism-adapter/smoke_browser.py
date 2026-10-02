@@ -76,7 +76,7 @@ def main():
             worker = adapter.BrowserWorker(lambda: adapter.BrowserTurn(state, args.chrome))
             try:
                 for n, session in enumerate(('a' * 64, 'a' * 64, 'b' * 64)):
-                    request_id, answer = worker.run('300', 'synthetic-fixture-token', f'fixture-{n}', session)
+                    request_id, answer = worker.run('300', 'synthetic-fixture-token', f'fixture-{n}', 'gpt-6.1-sol', 'high', session)
                     assert answer == f'fixture-{n}', (request_id, answer)
                 assert [t['input'] for t in FixtureHandler.turns] == [['fixture-0'], ['fixture-1'], ['fixture-2']]
                 projects = [t['metadata']['projectId'] for t in FixtureHandler.turns]
