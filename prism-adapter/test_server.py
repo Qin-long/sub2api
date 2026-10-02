@@ -275,7 +275,7 @@ class BrowserTurnTests(unittest.TestCase):
         routes = []
 
         def submit(page):
-            routes.append(page.browser_request(adapter.START, {"metadata": {"model": adapter.MODEL, "reasoning_effort": "high"}}))
+            routes.append(page.browser_request(adapter.START, {"metadata": {"model": adapter.DEFAULT_MODEL, "reasoning_effort": "high"}}))
 
         with tempfile.TemporaryDirectory() as directory:
             state = adapter.State(directory)
