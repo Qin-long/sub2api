@@ -444,6 +444,10 @@ func (h *OpenAIOAuthHandler) CreateAccountFromSIWC(c *gin.Context) {
 		response.BadRequest(c, "SIWC refresh did not return an access token")
 		return
 	}
+	if !service.IsOpenAISIWCDirectScope(tokenInfo.Scope) {
+		response.BadRequest(c, "SIWC token does not include resource.invoke + chatgpt.tokens.use.direct")
+		return
+	}
 	tokenInfo.AuthMode = service.OpenAIAuthModeChatGPTTokenSharing
 
 	credentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
