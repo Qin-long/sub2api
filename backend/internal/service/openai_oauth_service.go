@@ -121,6 +121,7 @@ type OpenAITokenInfo struct {
 	ExpiresIn             int64  `json:"expires_in"`
 	ExpiresAt             int64  `json:"expires_at"`
 	ClientID              string `json:"client_id,omitempty"`
+	Scope                 string `json:"scope,omitempty"`
 	AuthMode              string `json:"auth_mode,omitempty"`
 	Email                 string `json:"email,omitempty"`
 	ChatGPTAccountID      string `json:"chatgpt_account_id,omitempty"`
@@ -195,6 +196,7 @@ func (s *OpenAIOAuthService) ExchangeCode(ctx context.Context, input *OpenAIExch
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
 		ClientID:     clientID,
+		Scope:        strings.TrimSpace(tokenResp.Scope),
 	}
 
 	if userInfo != nil {
@@ -239,6 +241,7 @@ func (s *OpenAIOAuthService) RefreshTokenWithClientID(ctx context.Context, refre
 		IDToken:      tokenResp.IDToken,
 		ExpiresIn:    int64(tokenResp.ExpiresIn),
 		ExpiresAt:    time.Now().Unix() + int64(tokenResp.ExpiresIn),
+		Scope:        strings.TrimSpace(tokenResp.Scope),
 	}
 	if trimmed := strings.TrimSpace(clientID); trimmed != "" {
 		tokenInfo.ClientID = trimmed
@@ -430,6 +433,9 @@ func (s *OpenAIOAuthService) BuildAccountCredentials(tokenInfo *OpenAITokenInfo)
 	}
 	if strings.TrimSpace(tokenInfo.ClientID) != "" {
 		creds["client_id"] = strings.TrimSpace(tokenInfo.ClientID)
+	}
+	if strings.TrimSpace(tokenInfo.Scope) != "" {
+		creds["granted_scope"] = strings.TrimSpace(tokenInfo.Scope)
 	}
 	if tokenInfo.AuthMode == OpenAIAuthModePersonalAccessToken {
 		creds[openAIAuthModeCredentialKey] = OpenAIAuthModePersonalAccessToken
