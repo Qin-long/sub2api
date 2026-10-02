@@ -173,6 +173,21 @@ type OpenAIRefreshTokenRequest struct {
 	ProxyID      *int64 `json:"proxy_id"`
 }
 
+type OpenAISIWCAccountCreateRequest struct {
+	RefreshToken          string   `json:"refresh_token"`
+	RT                    string   `json:"rt"`
+	ClientID              string   `json:"client_id" binding:"required"`
+	Name                  string   `json:"name"`
+	Notes                 *string  `json:"notes"`
+	GroupIDs              []int64  `json:"group_ids"`
+	ProxyID               *int64   `json:"proxy_id"`
+	Concurrency           *int     `json:"concurrency"`
+	Priority              *int     `json:"priority"`
+	RateMultiplier        *float64 `json:"rate_multiplier"`
+	LoadFactor            *int     `json:"load_factor"`
+	SkipDefaultGroupBind  *bool    `json:"skip_default_group_bind"`
+}
+
 type OpenAICodexPATCreateRequest struct {
 	AccessToken             string         `json:"access_token" binding:"required"`
 	Name                    string         `json:"name"`
@@ -353,6 +368,125 @@ func (h *OpenAIOAuthHandler) CreateAccountFromOAuth(c *gin.Context) {
 		Concurrency: req.Concurrency,
 		Priority:    req.Priority,
 		GroupIDs:    req.GroupIDs,
+	})
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, dto.AccountForObserver(c.Request.Context(), dto.AccountFromService(account)))
+}
+
+// CreateAccountFromSIWC creates an OpenAI OAuth account from an already-issued
+// Sign in with ChatGPT token-sharing registration. Supplying the RT here consumes
+// it through the SIWC refresh endpoint and persists the replacement RT returned by OpenAI.
+// POST /api/v1/admin/openai/create-from-siwc
+func (h *OpenAIOAuthHandler) CreateAccountFromSIWC(c *gin.Context) {
+	var req OpenAISIWCAccountCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+
+	refreshToken := strings.TrimSpace(req.RefreshToken)
+	if refreshToken == "" {
+		refreshToken = strings.TrimSpace(req.RT)
+	}
+	if refreshToken == "" {
+		response.BadRequest(c, "refresh_token is required")
+		return
+	}
+	clientID := strings.TrimSpace(req.ClientID)
+	if !openai.IsTokenSharingClientID(clientID) {
+		response.BadRequest(c, "SIWC client_id must be the issued oaiapp_... registration")
+		return
+	}
+	if req.Concurrency != nil && *req.Concurrency < 0 {
+		response.BadRequest(c, "concurrency must be >= 0")
+		return
+	}
+	if req.Priority != nil && *req.Priority < 0 {
+		response.BadRequest(c, "priority must be >= 0")
+		return
+	}
+	if req.RateMultiplier != nil && *req.RateMultiplier < 0 {
+		response.BadRequest(c, "rate_multiplier must be >= 0")
+		return
+	}
+	if req.LoadFactor != nil && *req.LoadFactor > 10000 {
+		response.BadRequest(c, "load_factor must be <= 10000")
+		return
+	}
+
+	var proxyURL string
+	if req.ProxyID != nil {
+		proxy, err := h.adminService.GetProxy(c.Request.Context(), *req.ProxyID)
+		if err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
+		if proxy != nil {
+			proxyURL = proxy.URL()
+		}
+	}
+
+	tokenInfo, err := h.openaiOAuthService.RefreshTokenWithClientID(
+		c.Request.Context(),
+		refreshToken,
+		proxyURL,
+		clientID,
+	)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	if strings.TrimSpace(tokenInfo.AccessToken) == "" {
+		response.BadRequest(c, "SIWC refresh did not return an access token")
+		return
+	}
+	if !service.IsOpenAISIWCDirectScope(tokenInfo.Scope) {
+		response.BadRequest(c, "SIWC token does not include resource.invoke + chatgpt.tokens.use.direct")
+		return
+	}
+	tokenInfo.AuthMode = service.OpenAIAuthModeChatGPTTokenSharing
+
+	credentials := h.openaiOAuthService.BuildAccountCredentials(tokenInfo)
+	credentials["auth_mode"] = service.OpenAIAuthModeChatGPTTokenSharing
+	credentials["auth_flow"] = "chatgpt-token-sharing"
+
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = strings.TrimSpace(tokenInfo.Email)
+	}
+	if name == "" {
+		name = "ChatGPT SIWC Account"
+	}
+	concurrency := 3
+	if req.Concurrency != nil {
+		concurrency = *req.Concurrency
+	}
+	priority := 50
+	if req.Priority != nil {
+		priority = *req.Priority
+	}
+	skipDefaultGroupBind := false
+	if req.SkipDefaultGroupBind != nil {
+		skipDefaultGroupBind = *req.SkipDefaultGroupBind
+	}
+
+	account, err := h.adminService.CreateAccount(c.Request.Context(), &service.CreateAccountInput{
+		Name:                 name,
+		Notes:                req.Notes,
+		Platform:             service.PlatformOpenAI,
+		Type:                 service.AccountTypeOAuth,
+		Credentials:          credentials,
+		ProxyID:              req.ProxyID,
+		Concurrency:          concurrency,
+		Priority:             priority,
+		RateMultiplier:       req.RateMultiplier,
+		LoadFactor:           req.LoadFactor,
+		GroupIDs:             req.GroupIDs,
+		SkipDefaultGroupBind: skipDefaultGroupBind,
 	})
 	if err != nil {
 		response.ErrorFrom(c, err)

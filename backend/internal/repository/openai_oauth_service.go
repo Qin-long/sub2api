@@ -16,11 +16,15 @@ import (
 
 // NewOpenAIOAuthClient creates a new OpenAI OAuth client
 func NewOpenAIOAuthClient() service.OpenAIOAuthClient {
-	return &openaiOAuthService{tokenURL: openai.TokenURL}
+	return &openaiOAuthService{
+		tokenURL:              openai.TokenURL,
+		tokenSharingTokenURL: openai.TokenSharingTokenURL,
+	}
 }
 
 type openaiOAuthService struct {
-	tokenURL string
+	tokenURL              string
+	tokenSharingTokenURL string
 }
 
 func (s *openaiOAuthService) ExchangeCode(ctx context.Context, code, codeVerifier, redirectURI, proxyURL, clientID string) (*openai.TokenResponse, error) {
@@ -92,18 +96,30 @@ func (s *openaiOAuthService) refreshTokenWithClientID(ctx context.Context, refre
 	formData.Set("grant_type", "refresh_token")
 	formData.Set("refresh_token", refreshToken)
 	formData.Set("client_id", clientID)
-	formData.Set("scope", openai.RefreshScopes)
+
+	tokenURL := s.tokenURL
+	if openai.IsTokenSharingClientID(clientID) {
+		formData.Set("resource", openai.TokenSharingResource)
+		tokenURL = s.tokenSharingTokenURL
+		if strings.TrimSpace(tokenURL) == "" {
+			tokenURL = openai.TokenSharingTokenURL
+		}
+	} else {
+		formData.Set("scope", openai.RefreshScopes)
+	}
 
 	var tokenResp openai.TokenResponse
 
-	authUA, authOriginator := service.CodexCanonicalAuthIdentity()
-	resp, err := client.R().
+	request := client.R().
 		SetContext(ctx).
-		SetHeader("User-Agent", authUA).
-		SetHeader("originator", authOriginator).
 		SetFormDataFromValues(formData).
-		SetSuccessResult(&tokenResp).
-		Post(s.tokenURL)
+		SetSuccessResult(&tokenResp)
+	if !openai.IsTokenSharingClientID(clientID) {
+		authUA, authOriginator := service.CodexCanonicalAuthIdentity()
+		request.SetHeader("User-Agent", authUA)
+		request.SetHeader("originator", authOriginator)
+	}
+	resp, err := request.Post(tokenURL)
 
 	if err != nil {
 		if shouldReturnOpenAINoProxyHint(ctx, proxyURL, err) {

@@ -116,6 +116,27 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return s.forwardExcelBPS(ctx, c, account, body, startTime)
 	}
 
+	if account.IsOpenAISIWCTokenSharing() {
+		normalizedBody, normalizeErr := normalizeOpenAISIWCPayload(body)
+		if normalizeErr != nil {
+			return nil, normalizeErr
+		}
+		view := newOpenAIRequestView(normalizedBody)
+		SetActualOpenAIUpstreamEndpoint(c, openAIResponsesUpstreamEndpoint)
+		return s.forwardOpenAIPassthrough(
+			ctx,
+			c,
+			account,
+			normalizedBody,
+			normalizedBody,
+			view.Model,
+			false,
+			extractOpenAIReasoningEffortFromBody(normalizedBody, view.Model),
+			view.Stream,
+			startTime,
+		)
+	}
+
 	if account.IsOpenAIOAuthLike() {
 		stripped, changed, stripErr := stripOpenAICodexUnsupportedWebSearchFields(body)
 		if stripErr != nil {
@@ -1670,8 +1691,12 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	var targetURL string
 	switch account.Type {
 	case AccountTypeOAuth:
-		// OAuth accounts use ChatGPT internal API
-		targetURL = chatgptCodexURL
+		if account.IsOpenAISIWCTokenSharing() {
+			targetURL = openaiPlatformAPIURL
+		} else {
+			// Traditional ChatGPT/Codex OAuth accounts use the internal Codex API.
+			targetURL = chatgptCodexURL
+		}
 	case AccountTypeSetupToken:
 		if account.IsOpenAIOAuthLike() {
 			targetURL = chatgptCodexURL
@@ -1738,11 +1763,14 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 			}
 		}
 	}
-	// 客户端回带的 x-codex-turn-state 若已知由其他账号铸造（failover 换号），
-	// 剥离后再出站——异账号 blob 与本账号的（指纹收敛后）出站身份自相矛盾。
-	s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
-	if err := s.applyOpenAICodexTicket(ctx, account, extractOpenAICodexTicketModel(body), req.Header); err != nil {
-		return nil, err
+	// SIWC uses the public Responses API and must not carry Codex routing state/tickets.
+	if !account.IsOpenAISIWCTokenSharing() {
+		// 客户端回带的 x-codex-turn-state 若已知由其他账号铸造（failover 换号），
+		// 剥离后再出站——异账号 blob 与本账号的（指纹收敛后）出站身份自相矛盾。
+		s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
+		if err := s.applyOpenAICodexTicket(ctx, account, extractOpenAICodexTicketModel(body), req.Header); err != nil {
+			return nil, err
+		}
 	}
 	if account.UsesOpenAICodexProtocol() {
 		compatMessagesBridge := isOpenAICompatMessagesBridgeContext(c) || isOpenAICompatMessagesBridgeBody(body)
@@ -1801,7 +1829,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 
 	// 账号 namespace 不改变客户端身份基数，但确保 scheduler failover 后不会把
 	// 同一组 Codex IDs 发送给另一份 OAuth 凭据。可选指纹收敛随后仍可覆盖这些值。
-	if s.harvestPinnedSessionForModel(ctx, account, extractOpenAICodexTicketModel(body)) == "" {
+	if !account.IsOpenAISIWCTokenSharing() && s.harvestPinnedSessionForModel(ctx, account, extractOpenAICodexTicketModel(body)) == "" {
 		applyCodexAccountIdentityHeaders(req.Header, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
 		applyStagedCodexFingerprintHeaders(c, account, req.Header)
 	}
@@ -1826,10 +1854,21 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, body, openCodeSessionHintBody(promptCacheKey))
 	// x-codex-beta-features：按真实 Codex 的会话级行为补注（在账号级覆写之后，
 	// 保证不被覆盖丢失）。
-	applyOpenAICodexBetaFeatures(c, account, req.Header)
-	setOpenAICodexRoutingHintFromBody(req.Header, account, body)
-	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http", req.Header, body, "not_applicable")
-	s.pinBoundCodexTicketHarvestIdentity(req, account)
+	if account.IsOpenAISIWCTokenSharing() {
+		req.Header.Set(openAISIWCPreviewHeader, openAISIWCPreviewValue)
+		req.Header.Del("ChatGPT-Account-ID")
+		req.Header.Del("originator")
+		req.Header.Del("version")
+		req.Header.Del("x-codex-turn-state")
+		req.Header.Del("session_id")
+		req.Header.Del("conversation_id")
+		req.Header.Del("x-codex-beta-features")
+	} else {
+		applyOpenAICodexBetaFeatures(c, account, req.Header)
+		setOpenAICodexRoutingHintFromBody(req.Header, account, body)
+		logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http", req.Header, body, "not_applicable")
+		s.pinBoundCodexTicketHarvestIdentity(req, account)
+	}
 
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
