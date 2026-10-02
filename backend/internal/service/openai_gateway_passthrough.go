@@ -645,7 +645,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	targetURL := openaiPlatformAPIURL
 	switch account.Type {
 	case AccountTypeOAuth:
-		targetURL = chatgptCodexURL
+		if !account.IsOpenAISIWCTokenSharing() {
+			targetURL = chatgptCodexURL
+		}
 	case AccountTypeSetupToken:
 		if account.IsOpenAIOAuthLike() {
 			targetURL = chatgptCodexURL
@@ -688,11 +690,14 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 		}
 	}
 
-	// 客户端回带的 x-codex-turn-state 若已知由其他账号铸造（failover 换号），
-	// 剥离后再出站（openai_codex_turn_state.go）。
-	s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
-	if err := s.applyOpenAICodexTicket(ctx, account, extractOpenAICodexTicketModel(body), req.Header); err != nil {
-		return nil, err
+	// SIWC uses the public Responses API and must not carry Codex routing state/tickets.
+	if !account.IsOpenAISIWCTokenSharing() {
+		// 客户端回带的 x-codex-turn-state 若已知由其他账号铸造（failover 换号），
+		// 剥离后再出站（openai_codex_turn_state.go）。
+		s.guardOpenAICodexTurnStateEcho(c, account, req.Header)
+		if err := s.applyOpenAICodexTicket(ctx, account, extractOpenAICodexTicketModel(body), req.Header); err != nil {
+			return nil, err
+		}
 	}
 
 	// 覆盖入站鉴权残留，并注入上游认证
@@ -771,7 +776,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
 		req.Header.Set("user-agent", CodexCanonicalUserAgent())
 	}
-	if s.harvestPinnedSessionForModel(ctx, account, extractOpenAICodexTicketModel(body)) == "" {
+	if !account.IsOpenAISIWCTokenSharing() && s.harvestPinnedSessionForModel(ctx, account, extractOpenAICodexTicketModel(body)) == "" {
 		applyCodexAccountIdentityHeaders(req.Header, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
 		applyStagedCodexFingerprintHeaders(c, account, req.Header)
 	}
@@ -798,10 +803,21 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	applyOpenCodeSessionHeader(c, account, targetURL, req.Header, body)
 	// x-codex-beta-features：按真实 Codex 的会话级行为补注（在账号级覆写之后，
 	// 保证不被覆盖丢失）。
-	applyOpenAICodexBetaFeatures(c, account, req.Header)
-	setOpenAICodexRoutingHintFromBody(req.Header, account, body)
-	logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http_passthrough", req.Header, body, "not_applicable")
-	s.pinBoundCodexTicketHarvestIdentity(req, account)
+	if account.IsOpenAISIWCTokenSharing() {
+		req.Header.Set(openAISIWCPreviewHeader, openAISIWCPreviewValue)
+		req.Header.Del("ChatGPT-Account-ID")
+		req.Header.Del("originator")
+		req.Header.Del("version")
+		req.Header.Del("x-codex-turn-state")
+		req.Header.Del("session_id")
+		req.Header.Del("conversation_id")
+		req.Header.Del("x-codex-beta-features")
+	} else {
+		applyOpenAICodexBetaFeatures(c, account, req.Header)
+		setOpenAICodexRoutingHintFromBody(req.Header, account, body)
+		logOpenAIRoutingDiagnosticsFromBody(ctx, account, "http_passthrough", req.Header, body, "not_applicable")
+		s.pinBoundCodexTicketHarvestIdentity(req, account)
+	}
 
 	if account.IsCopilotSDKEnabled() {
 		return req, nil
