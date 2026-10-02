@@ -42,6 +42,34 @@ Example account fragment:
 }
 ```
 
+## Fastest way to create an account from RT
+
+If you already have the SIWC refresh token and its matching issued
+`oaiapp_...` client registration, the branch exposes:
+
+```text
+POST /api/v1/admin/openai/create-from-siwc
+```
+
+Example body:
+
+```json
+{
+  "refresh_token": "<current SIWC RT>",
+  "client_id": "oaiapp_<issued registration>",
+  "name": "OpenClaw SIWC",
+  "concurrency": 3,
+  "priority": 50
+}
+```
+
+The endpoint immediately performs one SIWC refresh, stores the returned access
+token and replacement refresh token, and marks the account with
+`auth_mode=chatgpt_token_sharing`.
+
+Because the RT may rotate, do not submit the same RT concurrently to another
+client while testing.
+
 ## Upstream behavior
 
 SIWC accounts are routed to:
