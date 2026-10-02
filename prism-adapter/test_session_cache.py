@@ -50,8 +50,9 @@ class SessionCacheTests(unittest.TestCase):
         self.assertEqual(route.outcome, "continued")
         page.server_response(adapter.STATUS, completed(request_id, request_id))
 
-    def run_turn(self, account="300", token="fixture-token", session="a" * 64):
-        return self.turn.run(account, token, "[user]\nfixture", session)
+    def run_turn(self, account="300", token="fixture-token", session="a" * 64,
+                 model="gpt-6.1-sol", effort="medium"):
+        return self.turn.run(account, token, "[user]\nfixture", model, effort, session)
 
     def test_same_session_reuses_context_project_but_not_chat_or_answer(self):
         self.assertEqual(self.run_turn(), ("request-0", "request-0"))
