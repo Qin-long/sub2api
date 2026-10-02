@@ -13,6 +13,7 @@ func TestAccountIsOpenAISIWCTokenSharing(t *testing.T) {
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
 			Credentials: map[string]any{
+				"client_id": "oaiapp_test_registration",
 				"auth_mode": "chatgpt_token_sharing",
 			},
 		}
@@ -25,10 +26,24 @@ func TestAccountIsOpenAISIWCTokenSharing(t *testing.T) {
 			Platform: PlatformOpenAI,
 			Type:     AccountTypeOAuth,
 			Credentials: map[string]any{
+				"client_id":     "oaiapp_test_registration",
 				"granted_scope": "openid profile resource.invoke chatgpt.tokens.use.direct offline_access",
 			},
 		}
 		require.True(t, account.IsOpenAISIWCTokenSharing())
+	})
+
+	t.Run("marker without issued client id is rejected", func(t *testing.T) {
+		account := &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeOAuth,
+			Credentials: map[string]any{
+				"client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+				"auth_mode": "chatgpt_token_sharing",
+			},
+		}
+		require.False(t, account.IsOpenAISIWCTokenSharing())
+		require.True(t, account.UsesOpenAICodexProtocol())
 	})
 
 	t.Run("ordinary codex oauth remains codex", func(t *testing.T) {
