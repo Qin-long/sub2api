@@ -22,6 +22,10 @@ const (
 	AuthorizeURL = "https://auth.openai.com/oauth/authorize"
 	TokenURL     = "https://auth.openai.com/oauth/token"
 
+	// Sign in with ChatGPT token-sharing (SIWC) endpoints.
+	TokenSharingTokenURL = "https://auth.openai.com/api/accounts/oauth/token"
+	TokenSharingResource = "https://api.openai.com/v1"
+
 	// Default redirect URI (can be customized)
 	DefaultRedirectURI = "http://localhost:1455/auth/callback"
 
@@ -38,6 +42,10 @@ const (
 	// OAuthPlatformOpenAI uses OpenAI Codex-compatible OAuth client.
 	OAuthPlatformOpenAI = "openai"
 )
+
+func IsTokenSharingClientID(clientID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(clientID), "oaiapp_")
+}
 
 // OAuthSession stores OAuth flow state for OpenAI
 type OAuthSession struct {
