@@ -110,14 +110,16 @@ func (s *openaiOAuthService) refreshTokenWithClientID(ctx context.Context, refre
 
 	var tokenResp openai.TokenResponse
 
-	authUA, authOriginator := service.CodexCanonicalAuthIdentity()
-	resp, err := client.R().
+	request := client.R().
 		SetContext(ctx).
-		SetHeader("User-Agent", authUA).
-		SetHeader("originator", authOriginator).
 		SetFormDataFromValues(formData).
-		SetSuccessResult(&tokenResp).
-		Post(tokenURL)
+		SetSuccessResult(&tokenResp)
+	if !openai.IsTokenSharingClientID(clientID) {
+		authUA, authOriginator := service.CodexCanonicalAuthIdentity()
+		request.SetHeader("User-Agent", authUA)
+		request.SetHeader("originator", authOriginator)
+	}
+	resp, err := request.Post(tokenURL)
 
 	if err != nil {
 		if shouldReturnOpenAINoProxyHint(ctx, proxyURL, err) {
