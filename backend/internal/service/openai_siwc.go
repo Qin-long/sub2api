@@ -48,10 +48,15 @@ func (a *Account) IsOpenAISIWCTokenSharing() bool {
 	if scope == "" {
 		scope = strings.TrimSpace(a.GetCredential("scope"))
 	}
+	return IsOpenAISIWCDirectScope(scope)
+}
+
+// IsOpenAISIWCDirectScope verifies the token-sharing grant returned by OpenAI.
+func IsOpenAISIWCDirectScope(scope string) bool {
+	scope = strings.TrimSpace(scope)
 	if scope == "" {
 		return false
 	}
-
 	granted := make(map[string]struct{})
 	for _, item := range strings.Fields(scope) {
 		granted[item] = struct{}{}
