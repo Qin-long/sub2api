@@ -234,7 +234,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		if normalized {
 			body = normalizedBody
 		}
-		if account.IsOpenAIOAuthLike() {
+		if account.UsesOpenAICodexProtocol() {
 			aliasedBody, reverse, aliased, aliasErr := aliasOpenAIOAuthReservedToolNamesBody(body)
 			if aliasErr != nil {
 				return nil, aliasErr
@@ -769,12 +769,15 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	}
 
 	// 透传模式也支持账户自定义 User-Agent 与 ForceCodexCLI 兜底。
-	customUA := account.GetOpenAIUserAgent()
-	if customUA != "" {
-		req.Header.Set("user-agent", customUA)
-	}
-	if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
-		req.Header.Set("user-agent", CodexCanonicalUserAgent())
+	// SIWC is a public Responses route, so do not stamp the Codex client identity on it.
+	if !account.IsOpenAISIWCTokenSharing() {
+		customUA := account.GetOpenAIUserAgent()
+		if customUA != "" {
+			req.Header.Set("user-agent", customUA)
+		}
+		if s.cfg != nil && s.cfg.Gateway.ForceCodexCLI {
+			req.Header.Set("user-agent", CodexCanonicalUserAgent())
+		}
 	}
 	if !account.IsOpenAISIWCTokenSharing() && s.harvestPinnedSessionForModel(ctx, account, extractOpenAICodexTicketModel(body)) == "" {
 		applyCodexAccountIdentityHeaders(req.Header, codexAccountIdentitySource(c, account), getAPIKeyIDFromContext(c))
@@ -805,7 +808,13 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	// 保证不被覆盖丢失）。
 	if account.IsOpenAISIWCTokenSharing() {
 		req.Header.Set(openAISIWCPreviewHeader, openAISIWCPreviewValue)
+		if gjson.GetBytes(body, "stream").Bool() {
+			req.Header.Set("accept", "text/event-stream")
+		} else {
+			req.Header.Set("accept", "application/json")
+		}
 		req.Header.Del("ChatGPT-Account-ID")
+		req.Header.Del("OpenAI-Beta")
 		req.Header.Del("originator")
 		req.Header.Del("version")
 		req.Header.Del("x-codex-turn-state")
