@@ -20,17 +20,19 @@ spec.loader.exec_module(adapter)
 
 class AdapterTests(unittest.TestCase):
     def test_text_request_keeps_model_and_stream(self):
-        prompt, stream = adapter.parse_prompt({
-            "model": "gpt-5.6-sol", "stream": True,
+        prompt, stream, model, effort = adapter.parse_prompt({
+            "model": "gpt-6.1-sol", "stream": True,
             "instructions": "Answer exactly.",
+            "reasoning": {"effort": "high"},
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
         })
         self.assertEqual(prompt, "[instructions]\nAnswer exactly.\n\n[user]\nhi")
         self.assertTrue(stream)
+        self.assertEqual((model, effort), ("gpt-6.1-sol", "high"))
 
     def test_unsupported_features_fail_closed(self):
         for change in ({"model": "gpt-6-astra"}, {"tools": [{"type": "function", "name": "x"}]},
-                       {"previous_response_id": "resp_1"}, {"reasoning": {"effort": "high"}}):
+                       {"previous_response_id": "resp_1"}, {"reasoning": {"effort": "ultra"}}):
             request = {"model": "gpt-5.6-sol", "input": "hi", **change}
             with self.assertRaises(adapter.AdapterError):
                 adapter.parse_prompt(request)
@@ -54,8 +56,8 @@ class AdapterTests(unittest.TestCase):
 
     def test_http_boundary_uses_real_terminal_without_usage(self):
         class FakeBrowser:
-            def run(self, account_id, token, prompt, session_id=None):
-                self.assert_values = (account_id, token, prompt, session_id)
+            def run(self, account_id, token, prompt, model, reasoning_effort, session_id=None):
+                self.assert_values = (account_id, token, prompt, model, reasoning_effort, session_id)
                 return "prism-123", "21"
 
         fake = FakeBrowser()
@@ -72,7 +74,7 @@ class AdapterTests(unittest.TestCase):
                        "Content-Type": "application/json"}
             with urlopen(Request(url, data=data, headers=headers), timeout=5) as response:
                 body = json.load(response)
-            self.assertEqual(fake.assert_values, ("300", "oauth-token", "[user]\ncandy", "a" * 64))
+            self.assertEqual(fake.assert_values, ("300", "oauth-token", "[user]\ncandy", "gpt-5.6-sol", "medium", "a" * 64))
             self.assertEqual(body["output"][0]["content"][0]["text"], "21")
             self.assertIsNone(body["usage"])
             with self.assertRaises(HTTPError) as denied:
@@ -82,20 +84,18 @@ class AdapterTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def test_gate_blocks_retry_and_model_downgrade_before_send(self):
-        gate = adapter.StartGate()
+    def test_gate_blocks_unarmed_repeated_and_malformed_start(self):
         body = {"metadata": {"model": "gpt-5.6-sol", "reasoning_effort": "medium"}}
+        gate = adapter.StartGate("gpt-6.1-sol", "high")
         self.assertFalse(gate.accept(body))
-        gate = adapter.StartGate()
+        gate = adapter.StartGate("gpt-6.1-sol", "high")
         gate.armed = True
         self.assertTrue(gate.accept(body))
         self.assertFalse(gate.accept(body))
-        for metadata in ({"model": "gpt-6-astra", "reasoning_effort": "medium"},
-                         {"model": "gpt-5.6-sol", "reasoning_effort": "high"}):
-            gate = adapter.StartGate()
-            gate.armed = True
-            self.assertFalse(gate.accept({"metadata": metadata}))
-            self.assertFalse(gate.sent)
+        gate = adapter.StartGate("gpt-6.1-sol", "high")
+        gate.armed = True
+        self.assertFalse(gate.accept({"metadata": "invalid"}))
+        self.assertFalse(gate.sent)
 
     def test_success_is_not_terminal_without_completed_status(self):
         self.assertIsNone(adapter.terminal_text({"status": "running", "response": {"status": "success"}}))
@@ -111,7 +111,7 @@ class AdapterTests(unittest.TestCase):
             journal = json.loads((state.pending / "300").read_text())
             self.assertEqual(journal["turn_state"], "fixture-state-two")
             self.assertEqual(journal["request_id"], "fixture-request")
-            state.receipt("300", "fixture-request", 1, 2, "secret answer text")
+            state.receipt("300", "fixture-request", 1, 2, "secret answer text", "gpt-6.1-sol", "high")
             receipt = next(state.receipts.iterdir()).read_text()
             self.assertNotIn("secret answer text", receipt)
             self.assertNotIn("turn_state", receipt)
@@ -122,20 +122,24 @@ class AdapterTests(unittest.TestCase):
                        {"max_output_tokens": 10}, {"input": "   "}, {"store": True},
                        {"text": {"format": {"type": "json_schema"}}}):
             with self.assertRaises(adapter.AdapterError):
-                adapter.parse_prompt({"model": adapter.MODEL, "input": "hi", **fields})
+                adapter.parse_prompt({"model": adapter.DEFAULT_MODEL, "input": "hi", **fields})
 
 
 PROJECT = "0123abcd-0000-4000-8000-00000000abcd"
-VALID_START = {"metadata": {"model": adapter.MODEL, "reasoning_effort": "medium", "projectId": PROJECT}}
+# The page may still submit its previous/default model. The adapter rewrites
+# only model + reasoning effort before the request leaves the browser.
+VALID_START = {"metadata": {"model": "gpt-5.6-sol", "reasoning_effort": "medium", "projectId": PROJECT}}
 
 
 class FakeRoute:
     def __init__(self, request):
         self.request = request
         self.outcome = None
+        self.post_data = None
 
-    def continue_(self):
+    def continue_(self, **kwargs):
         self.outcome = "continued"
+        self.post_data = kwargs.get("post_data")
 
     def abort(self):
         self.outcome = "aborted"
@@ -250,7 +254,9 @@ def run_turn(state, on_submit):
     clock = types.SimpleNamespace(monotonic=lambda: page.clock, time=time.time)
     with mock.patch.object(adapter, "sync_playwright", lambda: contextlib.nullcontext(playwright)), \
             mock.patch.object(adapter, "time", clock):
-        return adapter.BrowserTurn(state, "/fixture/chromium").run("300", "fixture-oauth", "[user]\nhi")
+        return adapter.BrowserTurn(state, "/fixture/chromium").run(
+            "300", "fixture-oauth", "[user]\nhi", "gpt-6.1-sol", "high"
+        )
 
 
 class BrowserTurnTests(unittest.TestCase):
@@ -269,7 +275,7 @@ class BrowserTurnTests(unittest.TestCase):
         routes = []
 
         def submit(page):
-            routes.append(page.browser_request(adapter.START, {"metadata": {"model": adapter.MODEL, "reasoning_effort": "high"}}))
+            routes.append(page.browser_request(adapter.START, {"metadata": {"model": adapter.DEFAULT_MODEL, "reasoning_effort": "high"}}))
 
         with tempfile.TemporaryDirectory() as directory:
             state = adapter.State(directory)
@@ -314,6 +320,10 @@ class BrowserTurnTests(unittest.TestCase):
             state = adapter.State(directory)
             self.assertEqual(run_turn(state, submit), ("fixture-request", "21"))
             self.assertEqual([route.outcome for route in routes], ["continued", "continued"])
+            forwarded = json.loads(routes[0].post_data)
+            self.assertEqual(forwarded["metadata"]["model"], "gpt-6.1-sol")
+            self.assertEqual(forwarded["metadata"]["reasoning_effort"], "high")
+            self.assertEqual(forwarded["metadata"]["projectId"], PROJECT)
             self.assertFalse((state.pending / "300").exists())
             receipt = json.loads(next(state.receipts.iterdir()).read_text())
             self.assertEqual((receipt["start_count"], receipt["status_count"]), (1, 1))

@@ -445,7 +445,7 @@ func (s *AccountTestService) testPrismBrowserConnection(c *gin.Context, account 
 	}
 	modelID = strings.TrimSpace(modelID)
 	if modelID == "" {
-		modelID = "gpt-5.6-sol"
+		modelID = "gpt-6.1-sol"
 	}
 	if prompt == "" {
 		prompt = "hi"

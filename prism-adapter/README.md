@@ -2,7 +2,7 @@
 
 关联 [Issue #256](https://github.com/ranxi2001/sub2api/issues/256)。账号编辑页的 Prism 开关复用现有 OpenAI OAuth 凭据，通过回环适配服务访问 Prism 网页。管理员账号测试与 HTTP `/v1/responses` 共用后端凭据获取及适配器请求函数。
 
-当前只支持 `gpt-5.6-sol`、`medium` 和普通文本输入。`tools`、`additional_tools`、图片、工具结果、`previous_response_id`、background、structured output、compact 和原生 WebSocket 不支持。此版本不能替代带工具的 Codex 会话；P2 工具闭环、Codex CLI 端到端验收仍待实现。
+当前支持 Prism 现役文本模型 `gpt-6.1-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`，以及 `low` / `medium` / `high` / `xhigh` reasoning effort；仍只支持普通文本输入。适配器在真实浏览器发出 start 前只重写经过校验的 `metadata.model` 与 `metadata.reasoning_effort`，项目与 sandbox 元数据保持页面原值。`tools`、`additional_tools`、图片、工具结果、`previous_response_id`、background、structured output、compact 和原生 WebSocket 不支持。此版本不能替代带工具的 Codex 会话；P2 工具闭环、Codex CLI 端到端验收仍待实现。
 
 ## 协议边界
 

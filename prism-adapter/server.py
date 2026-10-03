@@ -28,7 +28,16 @@ STATUS = "/api/llm/response_with_tools_status"
 MAX_REQUEST_BYTES = 1 << 20
 MAX_PROMPT_CHARS = 32000
 SESSION_ID = re.compile(r"^[0-9a-f]{64}$")
-MODEL = "gpt-5.6-sol"
+DEFAULT_MODEL = "gpt-6.1-sol"
+DEFAULT_REASONING_EFFORT = "medium"
+MODEL_LABELS = {
+    "gpt-6.1-sol": "6.1 Sol",
+    "gpt-6-luna": "6 Luna",
+    "gpt-5.6-sol": "5.6 Sol",
+    "gpt-5.6-terra": "5.6 Terra",
+}
+REASONING_EFFORTS = {"low", "medium", "high", "xhigh"}
+MODEL_CONTROL = re.compile("|".join(re.escape(label) for label in MODEL_LABELS.values()))
 PROJECT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f-]{27,}$")
 ACCOUNT_ID = re.compile(r"^[1-9][0-9]{0,18}$")
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/153 Safari/537.36"
@@ -42,8 +51,11 @@ class AdapterError(Exception):
 
 
 def parse_prompt(payload):
-    if not isinstance(payload, dict) or payload.get("model") != MODEL:
-        raise AdapterError(422, "unsupported_model", "This Prism account currently supports gpt-5.6-sol only")
+    if not isinstance(payload, dict):
+        raise AdapterError(400, "invalid_request", "request body must be a JSON object")
+    model = str(payload.get("model") or "").strip()
+    if model not in MODEL_LABELS:
+        raise AdapterError(422, "unsupported_model", "This Prism adapter supports gpt-6.1-sol, gpt-6-luna, gpt-5.6-sol and gpt-5.6-terra")
     if payload.get("tools") or payload.get("additional_tools") or payload.get("previous_response_id") or payload.get("conversation"):
         raise AdapterError(422, "unsupported_request", "Prism adapter does not yet support tools or server-side conversation state")
     if any(payload.get(key) is not None for key in ("max_output_tokens", "temperature", "top_p")) or payload.get("background") or payload.get("store"):
@@ -54,8 +66,9 @@ def parse_prompt(payload):
     if not isinstance(text_options, dict) or text_options.get("format", {"type": "text"}) != {"type": "text"}:
         raise AdapterError(422, "unsupported_request", "Only plain text output is supported")
     reasoning = payload.get("reasoning") or {}
-    if not isinstance(reasoning, dict) or reasoning.get("effort", "medium") != "medium" or reasoning.get("summary") not in (None, "none"):
-        raise AdapterError(422, "unsupported_reasoning", "Prism browser currently provides medium reasoning only")
+    effort = reasoning.get("effort", DEFAULT_REASONING_EFFORT) if isinstance(reasoning, dict) else ""
+    if not isinstance(reasoning, dict) or effort not in REASONING_EFFORTS or reasoning.get("summary") not in (None, "none"):
+        raise AdapterError(422, "unsupported_reasoning", "Prism reasoning effort must be low, medium, high or xhigh")
     if not isinstance(payload.get("stream", False), bool):
         raise AdapterError(400, "invalid_request", "stream must be a boolean")
     items = payload.get("input")
@@ -88,7 +101,7 @@ def parse_prompt(payload):
     prompt = "\n\n".join(parts)
     if not prompt.strip() or len(prompt) > MAX_PROMPT_CHARS:
         raise AdapterError(400, "invalid_request", "text input is empty or too long")
-    return prompt, payload.get("stream", False)
+    return prompt, payload.get("stream", False), model, effort
 
 
 def terminal_text(data):
@@ -186,9 +199,10 @@ class State:
         previous.update(data)
         self.atomic_write(path, previous)
 
-    def receipt(self, account_id, request_id, start_count, status_count, result, cache_hit=False):
+    def receipt(self, account_id, request_id, start_count, status_count, result, model, reasoning_effort, cache_hit=False):
         receipt_id = hashlib.sha256(request_id.encode()).hexdigest()
-        data = {"account_id": account_id, "request_id": request_id, "model": MODEL,
+        data = {"account_id": account_id, "request_id": request_id, "model": model,
+                "reasoning_effort": reasoning_effort,
                 "start_count": start_count, "status_count": status_count, "completed_at": int(time.time()),
                 "status": "failed" if isinstance(result, AdapterError) else "completed", "usage_source": "unavailable",
                 "session_cache_hit": cache_hit}
@@ -200,16 +214,17 @@ class State:
 
 class StartGate:
     """Authorize one exact start; browser retries are rejected before sending."""
-    def __init__(self):
+    def __init__(self, model, reasoning_effort):
+        self.model = model
+        self.reasoning_effort = reasoning_effort
         self.armed = False
         self.sent = False
         self.error = None
 
     def accept(self, body):
         metadata = body.get("metadata") if isinstance(body, dict) else None
-        if (not self.armed or self.sent or not isinstance(metadata, dict)
-                or metadata.get("model") != MODEL or metadata.get("reasoning_effort") != "medium"):
-            self.error = "Prism attempted an unarmed, repeated or mismatched model start"
+        if not self.armed or self.sent or not isinstance(metadata, dict):
+            self.error = "Prism attempted an unarmed, repeated or malformed model start"
             return False
         self.sent = True
         return True
@@ -249,9 +264,10 @@ class BrowserSession:
 
 
 class BrowserRequest:
-    def __init__(self, state, account_id, session):
+    def __init__(self, state, account_id, session, model, reasoning_effort):
         self.state, self.account_id, self.session = state, account_id, session
-        self.gate = StartGate()
+        self.model, self.reasoning_effort = model, reasoning_effort
+        self.gate = StartGate(model, reasoning_effort)
         self.request_id = ""
         self.polls = 0
         self.accepted = set()
@@ -283,8 +299,16 @@ class BrowserRequest:
                         self.gate.sent = False
                         self.gate.error = "Prism attempted to use another project"
                     else:
+                        # The page may still be displaying its previous/default
+                        # model. Rewrite only the trusted model controls while
+                        # preserving Prism's project/sandbox metadata verbatim.
+                        forwarded = dict(body)
+                        metadata = dict(body.get("metadata") or {})
+                        metadata["model"] = self.model
+                        metadata["reasoning_effort"] = self.reasoning_effort
+                        forwarded["metadata"] = metadata
                         self.accepted.add(request)
-                        route.continue_()
+                        route.continue_(post_data=json.dumps(forwarded, ensure_ascii=False, separators=(",", ":")))
                         return
         except Exception:
             self.gate.error = "Prism request could not be validated"
@@ -322,11 +346,11 @@ class BrowserRequest:
         page = self.session.page
         textarea = page.locator('textarea[placeholder="Ask anything"]')
         textarea.wait_for(state="visible", timeout=90000)
-        model_button = page.get_by_role("button", name=re.compile(r"5\.6 Sol"))
+        model_button = page.get_by_role("button", name=MODEL_CONTROL)
         try:
             model_button.wait_for(state="visible", timeout=90000)
         except Exception:
-            raise AdapterError(422, "unsupported_model", "gpt-5.6-sol is unavailable in this Prism account") from None
+            raise AdapterError(422, "unsupported_model", "Prism model controls are unavailable in this account") from None
         textarea.fill(prompt)
         self.state.begin(self.account_id, self.session.project)
         self.began = True
@@ -346,7 +370,7 @@ class BrowserRequest:
             raise AdapterError(502, "prism_failed", "Prism returned a failed turn")
         if not self.request_id:
             raise AdapterError(502, "missing_request_id", "Prism turn lacks a request identifier; pending state retained")
-        self.state.receipt(self.account_id, self.request_id, 1, self.polls, result, cache_hit)
+        self.state.receipt(self.account_id, self.request_id, 1, self.polls, result, self.model, self.reasoning_effort, cache_hit)
         self.state.finish(self.account_id)
         if isinstance(result, AdapterError):
             raise result
@@ -404,7 +428,7 @@ class BrowserTurn:
                 manager, self.manager = self.manager, None
                 manager.__exit__(None, None, None)
 
-    def run(self, account_id, token, prompt, session_id=None):
+    def run(self, account_id, token, prompt, model, reasoning_effort, session_id=None):
         self.state.ensure_idle(account_id)
         self.prune()
         # Rotate credentials by discarding every cached context for that account.
@@ -437,7 +461,7 @@ class BrowserTurn:
                 # Project files belong to this explicit client session. Start a
                 # new chat tab so caller-supplied history is not appended twice.
                 session.page.get_by_role("button", name="New chat tab", exact=True).click(timeout=60000)
-            request = BrowserRequest(self.state, account_id, session)
+            request = BrowserRequest(self.state, account_id, session, model, reasoning_effort)
             session.active = request
             result = request.run(prompt, cache_hit)
             succeeded = True
@@ -542,7 +566,7 @@ class BrowserWorker:
         self.thread.join(timeout=8)
 
 
-def response_payload(request_id, text):
+def response_payload(request_id, text, model):
     safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", request_id)[:100]
     if not safe_id:
         raise AdapterError(502, "missing_request_id", "Prism did not return a request identifier")
@@ -550,7 +574,7 @@ def response_payload(request_id, text):
         "id": "resp_prism_" + safe_id,
         "object": "response",
         "created_at": int(time.time()),
-        "model": MODEL,
+        "model": model,
         "status": "completed",
         "usage": None,
         "output": [{"id": "msg_prism_" + safe_id, "type": "message", "role": "assistant",
@@ -614,14 +638,14 @@ class Handler(BaseHTTPRequestHandler):
             if length < 1 or length > MAX_REQUEST_BYTES:
                 raise AdapterError(413, "request_too_large", "request body is empty or too large")
             payload = json.loads(self.rfile.read(length))
-            prompt, stream = parse_prompt(payload)
+            prompt, stream, model, reasoning_effort = parse_prompt(payload)
             if not self.lock.acquire(blocking=False):
                 raise AdapterError(429, "prism_busy", "Prism browser is busy; request was not submitted")
             try:
-                request_id, answer = self.browser_turn.run(account_id, token, prompt, session_id)
+                request_id, answer = self.browser_turn.run(account_id, token, prompt, model, reasoning_effort, session_id)
             finally:
                 self.lock.release()
-            response = response_payload(request_id, answer)
+            response = response_payload(request_id, answer, model)
             if stream:
                 created = dict(response, status="in_progress", output=[])
                 events = [
